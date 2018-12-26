@@ -12,7 +12,7 @@ y = []
 s = ""
 with open("code.txt","r") as fil:
     s = fil.read()
-for i in range(0, 8000):#len(s)-INPUT_SEQUENCE_LENGTH-1):
+for i in range(0, 12000):#len(s)-INPUT_SEQUENCE_LENGTH-1):
     X.append([ord(a) for a in s[i:i+INPUT_SEQUENCE_LENGTH]])
     y.append(ord(s[i+INPUT_SEQUENCE_LENGTH]))
 
@@ -22,10 +22,10 @@ y = [[int(i == el) for i in range(VOCAB_SIZE)] for el in y]
 X = np.array(X)
 y = np.array(y)
 model = Sequential()
-model.add(LSTM(70, return_sequences = True, input_shape = (INPUT_SEQUENCE_LENGTH, VOCAB_SIZE)))
-model.add(LSTM(70))
+model.add(LSTM(128, return_sequences = True, input_shape = (INPUT_SEQUENCE_LENGTH, VOCAB_SIZE)))
+model.add(LSTM(128))
 model.add(Dense(VOCAB_SIZE, activation='softmax'))
 print(model.summary())
 model.compile(loss='categorical_crossentropy',optimizer='adam')
-model.fit(X ,y,epochs = 100, verbose = 2)
-model.save("alphabetmodel.h5")
+model.fit(X ,y,epochs = 15, verbose = 2)
+model.save("codingModel.h5")
