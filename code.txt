@@ -1,0 +1,2987 @@
+package artificialintelligence;
+
+import java.awt.Color;
+import java.awt.image.BufferedImage;
+import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.LinkedList;
+import java.util.List;
+import javax.imageio.ImageIO;
+
+/**
+ * The way we represent a chess board
+ *
+ * @author rohan
+ */
+public class Chess extends GenericBoardGame {
+
+	/**
+	 * Some constants to keep myself organized
+	 */
+	//======Start of Constants======
+	/**
+	 * The value of a king in Centi-pawns
+	 */
+	public static final int KING_VALUE = 1000000;
+	/**
+	 * The queen's value in centi-pawns
+	 */
+	public static final int QUEEN_VALUE = 1280;
+	/**
+	 * The value of a rook
+	 */
+	public static final int ROOK_VALUE = 680;
+	/**
+	 * The Bishop's value, let us consider a bishop to be slightly better than a
+	 * knight
+	 */
+	public static final int BISHOP_VALUE = 440;
+	/**
+	 * The knight's value
+	 */
+	public static final int KNIGHT_VALUE = 420;
+	/**
+	 * Base value of a pawn, later gets more points for being higher
+	 */
+	public static final int PAWN_VALUE = 60;
+
+	/**
+	 * These constants are the constants used to represent pieces
+	 */
+	public static final int EMPTY = 0;
+	public static final int PAWN = 1;
+	public static final int KNIGHT = 2;
+	public static final int BISHOP = 3;
+	public static final int ROOK = 4;
+	public static final int QUEEN = 5;
+	public static final int KING = 6;
+	/**
+	 * All right, this one deserves some justification... A "Ghost pawn, is the
+	 * way we'll handle en passant" For the turn after (and just the turn after)
+	 * a pawn moves up two, we leave a ghost pawn, in it's square That way, the
+	 * board knows that square is valid for an en-passant capture
+	 */
+	public static final int GHOST_PAWN = 1 << 4;
+
+	/**
+	 * These values are values of flag bits
+	 */
+	/**
+	 * The human is "white" even if they plays second
+	 */
+	public static final int WHITE = 0;
+	/**
+	 * The AI is "black" even if it plays second
+	 */
+	public static final int BLACK = 1;
+
+	/**
+	 * Is unmoved bit location
+	 */
+	public static final int UNMOVED_BIT_INDEX = 4;
+
+	public static final int UNMOVED = 1;
+	public static final int MOVED = 0;
+	/**
+	 *
+	 * This array stores all the values for O(1) access
+	 */
+	public static final int[] VALUES = new int[7];
+
+	static {
+		VALUES[EMPTY] = 0;
+		VALUES[PAWN] = PAWN_VALUE;
+		VALUES[KNIGHT] = KNIGHT_VALUE;
+		VALUES[BISHOP] = BISHOP_VALUE;
+		VALUES[ROOK] = ROOK_VALUE;
+		VALUES[QUEEN] = QUEEN_VALUE;
+		VALUES[KING] = KING_VALUE;
+	}
+
+	public static final int[] PAWN_VALUE_TABLE = {0, 10, 25, 45, 70, 120, 140};
+
+	//======End of Constants======
+	/**
+	 * Ok, so we store the state of a single chessboard as an array of longs
+	 * This is for "performance" and "memory optimization" reasons (I think it
+	 * helps but I can't prove it.) Each long, represents one row. A long is 64
+	 * bits, so we can use around 8 bits to store each piece which should be
+	 * "plenty"
+	 */
+	public long[] state;
+
+	/**
+	 * Creates a chess board with the standard legal starting position The AI is
+	 * black
+	 */
+	public Chess() {
+		state = new long[8];
+		for (int i = 0; i < 8; i++) {
+			Chess.setTileAtSpot(state, 8 + i, PAWN + (BLACK << 3));
+			Chess.setTileAtSpot(state, 48 + i, PAWN);
+		}
+		Chess.setTileAtSpot(state, 0, ROOK + (BLACK << 3) + (UNMOVED << 4));
+		Chess.setTileAtSpot(state, 7, ROOK + (BLACK << 3) + (UNMOVED << 4));
+		Chess.setTileAtSpot(state, 1, KNIGHT + (BLACK << 3) + (UNMOVED << 4));
+		Chess.setTileAtSpot(state, 6, KNIGHT + (BLACK << 3) + (UNMOVED << 4));
+		Chess.setTileAtSpot(state, 2, BISHOP + (BLACK << 3) + (UNMOVED << 4));
+		Chess.setTileAtSpot(state, 5, BISHOP + (BLACK << 3) + (UNMOVED << 4));
+		Chess.setTileAtSpot(state, 4, KING + (BLACK << 3) + (UNMOVED << 4));
+		Chess.setTileAtSpot(state, 3, QUEEN + (BLACK << 3) + (UNMOVED << 4));
+
+		Chess.setTileAtSpot(state, 56, ROOK + (UNMOVED << 4));
+		Chess.setTileAtSpot(state, 63, ROOK + (UNMOVED << 4));
+		Chess.setTileAtSpot(state, 57, KNIGHT + (UNMOVED << 4));
+		Chess.setTileAtSpot(state, 62, KNIGHT + (UNMOVED << 4));
+		Chess.setTileAtSpot(state, 58, BISHOP + (UNMOVED << 4));
+		Chess.setTileAtSpot(state, 61, BISHOP + (UNMOVED << 4));
+		Chess.setTileAtSpot(state, 60, KING + (UNMOVED << 4));
+		Chess.setTileAtSpot(state, 59, QUEEN + (UNMOVED << 4));
+
+	}
+
+	@Override
+	public int getSize() {
+		return 8;
+	}
+
+	public boolean isInCheck(boolean isAgainstComputerPlayer) {
+		int kingLoc = -1;
+		for (int i = 0; i < 64; i++) {
+			if (getTileAtSpot(i) == ((isAgainstComputerPlayer ? 1 : 0) << 3) + KING) {
+				kingLoc = i;
+				break;
+			}
+		}
+
+		for (int a : this.getPossibleMoves(!isAgainstComputerPlayer, true, true)) {
+			if (a >> 6 == kingLoc) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Create a board with an initial state
+	 *
+	 * @param inState the initialized state
+	 */
+	public Chess(long[] inState) {
+		state = inState;
+	}
+
+	public static void setTileAtSpot(long[] inState, int spot, int tile) {
+		inState[spot >> 3] = manipulateState(inState[spot >> 3], spot & 7, tile);
+	}
+
+	public static long manipulateState(long state, long spot, long tile) {
+		return ((state & (~((((long) (255)) << ((spot << 3)))))) + (tile << (spot << 3)));
+
+	}
+
+	@Override
+	public int getTileAtSpot(int spot) {
+		return (int) ((((state[spot >> 3]) & ((long) 255 << ((spot & 7) << 3))) >> ((spot & 7) << 3)) & 15);
+	}
+
+	public int getTileAtSpotSpecial(int spot) {
+		return (int) ((((state[spot >> 3]) & ((long) 255 << ((spot & 7) << 3))) >> ((spot & 7) << 3)));
+	}
+
+	/**
+	 * If either side has lost a king the game is over
+	 *
+	 * @return
+	 */
+	@Override
+	public boolean isGameOver() {
+		return Math.abs(this.getValue()) > KING_VALUE / 2;
+	}
+
+	/**
+	 * A heuristic way of evaluating a board First, we take the difference of
+	 * the computers values and the opponents, next, we add bonuses/penalties
+	 * for center ownership and control
+	 *
+	 * @return the value of a board
+	 */
+	@Override
+	public int getValue() {
+
+//		if(isInCheck(true)){
+//			if(getPossibleMoves(true).isEmpty()){
+//				return -2 * VALUES[KING];
+//			}
+//		}
+//				if(isInCheck(false)){
+//			if(getPossibleMoves(false).isEmpty()){
+//				return 2 * VALUES[KING];
+//			}
+//		}
+		int value = 0;
+		int pieceCount = 64;
+		for (int i = 0; i < 64; i++) {
+			int piece = getTileAtSpotSpecial(i);
+//System.out.println(piece);
+			// Branchless == fast, a very quick (in theory) this is the fun way of saying subtract one iff empty
+			pieceCount -= (((~(piece & 15)) & 15) / 15);
+//encourage owning material
+			value += (((((piece & 8) >> 2) - 1))) * (VALUES[piece & 7]);
+
+			if ((piece & 7) == KING || (piece & 7) == ROOK) {
+				//encourage not moving the king or rook... heavily
+				value += (((((piece & 8) >> 2) - 1)) * (piece & 16)) << 2;
+			}
+
+			if (((i >> 3) > 0 && (piece & 8) == 8) && ((piece & 7) == BISHOP || (piece & 7) == KNIGHT)) {
+				//lightly encourage piece developement
+				value += 32;
+			}
+			if (((i >> 3) < 7 && (piece & 8) == 0) && ((piece & 7) == BISHOP || (piece & 7) == KNIGHT)) {
+				//lightly discourage hostile developement
+				value -= 32;
+			}
+
+//lightly encourage moving pawns up the board, and discourage enemy advancement
+			if ((piece & 7) == PAWN) {
+				if ((piece & 8) == (BLACK << 3)) {
+					value += PAWN_VALUE_TABLE[(i >> 3)];
+				} else {
+					value -= PAWN_VALUE_TABLE[7 - (i >> 3)];
+				}
+			}
+		}
+		if (pieceCount < 8) {
+			List<Integer> compMoves = getPossibleMoves(true, false, true);
+			LinkedList<Integer> compChecks = new LinkedList<>();
+			for (Integer c : compMoves) {
+				compChecks.add((c >> 6) & 63);
+			}
+			List<Integer> humanMoves = getPossibleMoves(false, false, true);
+			LinkedList<Integer> humanChecks = new LinkedList<>();
+			for (Integer c : humanMoves) {
+				compChecks.add((c >> 6) & 63);
+			}
+			for (Integer c : compMoves) {
+				compChecks.add((c >> 6) & 63);
+			}
+			int start = 0;
+			int compKingStartX, compKingStartY;
+			for (int i = 0; i < 64; i++) {
+				if ((getTileAtSpot(i) & 15) == (KING + (BLACK << 3))) {
+					start = i;
+					break;
+				}
+			}
+			compKingStartX = start % 8;
+			compKingStartY = start & 0b111000;
+			int compBoxSize = getFloodFillSize(start, humanChecks);
+			int humanKingStartX, humanKingStartY;
+			for (int i = 0; i < 64; i++) {
+				if ((getTileAtSpot(i) & 15) == (KING)) {
+					start = i;
+					break;
+				}
+			}
+			humanKingStartX = start % 8;
+			humanKingStartY = start & 0b111000;
+			value += (4 - Math.max(Math.abs(humanKingStartX - compKingStartX), Math.abs(humanKingStartY - compKingStartY)));
+			int humanBoxSize = getFloodFillSize(start, compChecks);
+			value -= (64 - compBoxSize) << 1;
+			value += (64 - humanBoxSize) << 1;
+		} else {
+			//encourage owning a spot in the center
+			value += ((((getTileAtSpot(27) & 8) >> 2) - 1)) * (35);
+			value += ((((getTileAtSpot(28) & 8) >> 2) - 1)) * (35);
+			value += ((((getTileAtSpot(35) & 8) >> 2) - 1)) * (35);
+			value += ((((getTileAtSpot(36) & 8) >> 2) - 1)) * (35);
+
+			//incentivize castling
+			if (((getTileAtSpot(2) & 7) == KING) && ((getTileAtSpot(3) & 7) == ROOK)) {
+				value += 90;
+			}
+			if ((getTileAtSpot(6) & 7) == KING && ((getTileAtSpot(5) & 7) == ROOK)) {
+				value += 135;
+			}
+		}
+		return value;
+	}
+
+	/**
+	 * Given a starting X and Y coordinate and zero indexed boolean array, where
+	 * wallArrayChecks[x][y] is whether x,y is an impassable square, return the
+	 * size of the simply connected region bounded by the impasses and/or some
+	 * combination of the walls using a floodfill method
+	 */
+	public static int getFloodFillSize(int start, List<Integer> checks) {
+		int ret = 0;
+		checks.add(start);
+		LinkedList<Integer> frontier = new LinkedList<>();
+		frontier.add(start);
+		while (!frontier.isEmpty()) {
+			LinkedList<Integer> finalFrontier = new LinkedList<>();
+			for (Integer a : frontier) {
+
+				if (a - 8 > 0) {
+					if (!checks.contains(a - 8)) {
+						checks.add(a - 8);
+						finalFrontier.add(a - 8);
+						ret++;
+					}
+				}
+				if (a - 8 > 0 && (a & 7) > 0) {
+					if (!checks.contains(a - 9)) {
+						checks.add(a - 9);
+						finalFrontier.add(a - 9);
+						ret++;
+					}
+				}
+				if (a - 8 > 0 && (a & 7) < 7) {
+					if (!checks.contains(a - 7)) {
+						checks.add(a - 7);
+						finalFrontier.add(a - 7);
+						ret++;
+					}
+				}
+				if (a + 8 < 64 && (a & 7) < 7) {
+					if (!checks.contains(a + 9)) {
+						checks.add(a + 9);
+						finalFrontier.add(a + 9);
+						ret++;
+					}
+				}
+				if (a + 8 < 64 && (a & 7) > 0) {
+					if (!checks.contains(a + 7)) {
+						checks.add(a + 7);
+						finalFrontier.add(a + 7);
+						ret++;
+					}
+				}
+				if (a + 8 < 64) {
+					if (!checks.contains(a + 8)) {
+						checks.add(a + 8);
+						finalFrontier.add(a + 8);
+						ret++;
+					}
+				}
+				if ((a & 7) > 0) {
+					if (!checks.contains(a - 1)) {
+						checks.add(a - 1);
+						finalFrontier.add(a - 1);
+						ret++;
+					}
+				}
+				if ((a & 7) < 7) {
+					if (!checks.contains(a + 1)) {
+						checks.add(a + 1);
+						finalFrontier.add(a + 1);
+						ret++;
+					}
+				}
+			}
+			frontier = finalFrontier;
+		}
+		return ret;
+	}
+	public static boolean doCloserAnalysis = false;
+
+	@Override
+	public List<Integer> getPossibleMoves(boolean isComputerMove
+	) {
+		return getPossibleMoves(isComputerMove, true, !doCloserAnalysis);
+	}
+
+	/**
+	 * I need a second version of this method to avoid an infinite loop when
+	 * both sides can castle
+	 *
+	 * @param isComputerMove
+	 * @param considerKing
+	 * @param shouldIgnoreChecks
+	 * @return
+	 */
+	public List<Integer> getPossibleMoves(boolean isComputerMove, boolean considerKing, boolean shouldIgnoreChecks) {
+		ArrayList<Integer> toRet = new ArrayList<>(40);
+		for (int i = 0; i < 64; i++) {
+			int piece = getTileAtSpot(i);
+			int side;
+			int b;
+			//if this is a piece that can be moved
+			if (((side = (piece & 8)) == 8) == (isComputerMove)) {
+				switch (piece & 7) {
+					case PAWN:
+						//Computer pawn... can be double moved
+						if ((side == 8) && ((i >> 3) == 1)) {
+							if (getTileAtSpot(i + 8) == 0 && getTileAtSpot(i + 16) == 0) {
+								toRet.add(((i + 16) << 6) + i);
+							}
+						}
+						//hostile pawn can be double moved
+						if ((side == 0) && ((i >> 3) == 6)) {
+							if (getTileAtSpot(i - 8) == 0 && getTileAtSpot(i - 16) == 0) {
+								toRet.add(((i - 16) << 6) + i);
+							}
+						}
+						int a = (side >> 2) - 1;
+						int end = i + (a << 3);
+
+						if (getTileAtSpot(end) == 0) {
+							toRet.add((end << 6) + i);
+						}
+						int specialTarget;
+						if ((i & 7) > 0) {
+
+							int leftDiagonalCapture = getTileAtSpot(end - 1);
+							//when checking for control of squares (for castling check), pretend pawns can diagonal move
+							//Also, allow pawns to capture en passant, yes I do know it's ugly
+							if ((leftDiagonalCapture != 0 && (leftDiagonalCapture & 8) != (side)) || !considerKing
+									|| (((specialTarget = getTileAtSpotSpecial(end - 1)) & GHOST_PAWN) != 0 && ((side) != ((specialTarget & 32) >> 2)))) {
+								toRet.add(((end - 1) << 6) + i);
+							}
+						}
+						if ((i & 7) < 7) {
+							int leftDiagonalCapture = getTileAtSpot(end + 1);
+							//same justification
+							if ((leftDiagonalCapture != 0 && (leftDiagonalCapture & 8) != (side)) || !considerKing
+									|| (((specialTarget = getTileAtSpotSpecial(end + 1)) & GHOST_PAWN) != 0 && ((side) != ((specialTarget & 32) >> 2)))) {
+								toRet.add(((end + 1) << 6) + i);
+							}
+						}
+						break;
+					case KNIGHT:
+
+						//trust me, this was the most efficient way to handle this one...
+						int x = i & 7;
+						int y = i >> 3;
+
+						if ((x + 2) < 8 && (y + 1) < 8) {
+							end = (x + 2) + ((y + 1) << 3);
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+						if ((x + 1) < 8 && (y + 2) < 8) {
+							end = (x + 1) + ((y + 2) << 3);
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+						if ((x - 1) >= 0 && (y + 2) < 8) {
+							end = (x - 1) + ((y + 2) << 3);
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+						if ((x - 2) >= 0 && (y + 1) < 8) {
+							end = (x - 2) + ((y + 1) << 3);
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+						if ((x - 2) >= 0 && (y - 1) >= 0) {
+							end = (x - 2) + ((y - 1) << 3);
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+						if ((x - 1) >= 0 && (y - 2) >= 0) {
+							end = (x - 1) + ((y - 2) << 3);
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+						if ((x + 1) < 8 && (y - 2) >= 0) {
+							end = (x + 1) + ((y - 2) << 3);
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+						if ((x + 2) < 8 && (y - 1) >= 0) {
+							end = (x + 2) + ((y - 1) << 3);
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+						break;
+
+					case BISHOP:
+
+						x = i & 7;
+						y = i >> 3;
+
+						for (int d = 1; d < 8; d++) {
+							if ((x + d) < 8 && (y + d) < 8) {
+								end = ((y + d) << 3) + (x + d);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+
+						for (int d = 1; d < 8; d++) {
+							if ((x + d) < 8 && (y - d) >= 0) {
+								end = ((y - d) << 3) + (x + d);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+						for (int d = 1; d < 8; d++) {
+							if ((x - d) >= 0 && (y - d) >= 0) {
+								end = ((y - d) << 3) + (x - d);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+						for (int d = 1; d < 8; d++) {
+							if ((x - d) >= 0 && (y + d) < 8) {
+								end = ((y + d) << 3) + (x - d);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+
+						break;
+					case ROOK:
+						x = i & 7;
+						y = i >> 3;
+
+						for (int d = 1; d < 8; d++) {
+							if ((x + d) < 8) {
+								end = ((y) << 3) + (x + d);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+
+						for (int d = 1; d < 8; d++) {
+							if ((x - d) >= 0) {
+								end = ((y) << 3) + (x - d);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+						for (int d = 1; d < 8; d++) {
+							if ((y - d) >= 0) {
+								end = ((y - d) << 3) + (x);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+						for (int d = 1; d < 8; d++) {
+							if ((y + d) < 8) {
+								end = ((y + d) << 3) + (x);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+						break;
+
+					case QUEEN:
+						//Sorry, you're almost through this method
+						//yes, the following code is just both the bishop and rook code combined
+						x = i & 7;
+						y = i >> 3;
+
+						for (int d = 1; d < 8; d++) {
+							if ((x + d) < 8 && (y + d) < 8) {
+								end = ((y + d) << 3) + (x + d);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+
+						for (int d = 1; d < 8; d++) {
+							if ((x + d) < 8 && (y - d) >= 0) {
+								end = ((y - d) << 3) + (x + d);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+						for (int d = 1; d < 8; d++) {
+							if ((x - d) >= 0 && (y - d) >= 0) {
+								end = ((y - d) << 3) + (x - d);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+						for (int d = 1; d < 8; d++) {
+							if ((x - d) >= 0 && (y + d) < 8) {
+								end = ((y + d) << 3) + (x - d);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+
+						for (int d = 1; d < 8; d++) {
+							if ((x + d) < 8) {
+								end = ((y) << 3) + (x + d);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+
+						for (int d = 1; d < 8; d++) {
+							if ((x - d) >= 0) {
+								end = ((y) << 3) + (x - d);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+						for (int d = 1; d < 8; d++) {
+							if ((y - d) >= 0) {
+								end = ((y - d) << 3) + (x);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+						for (int d = 1; d < 8; d++) {
+							if ((y + d) < 8) {
+								end = ((y + d) << 3) + (x);
+								int thisTile = getTileAtSpot(end);
+								if (thisTile == 0) {
+									toRet.add((end << 6) + i);
+								} else {
+									if ((thisTile & 8) != side) {
+										toRet.add((end << 6) + i);
+									}
+									break;
+								}
+							} else {
+								break;
+							}
+						}
+						break;
+					case KING:
+						if (!considerKing) {
+							break;
+						}
+						//once again, unfortunately, this is the best way to handle the king
+						x = i & 7;
+						y = i >> 3;
+
+						if ((x + 1) < 8 && (y + 1) < 8) {
+							end = (x + 1) + ((y + 1) << 3);
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+						if ((x + 1) < 8) {
+							end = (x + 1) + ((y) << 3);
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+						if ((x + 1) < 8 && (y - 1) >= 0) {
+							end = (x + 1) + ((y - 1) << 3);
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+						if ((x - 1) >= 0 && (y + 1) < 8) {
+							end = (x - 1) + ((y + 1) << 3);
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+						if ((x - 1) >= 0 && (y - 1) >= 0) {
+							end = (x - 1) + ((y - 1) << 3);
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+						if ((y + 1) < 8) {
+							end = (x) + ((y + 1) << 3);
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+						if ((x - 1) >= 0) {
+							end = (x - 1) + ((y) << 3);
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+						if ((y - 1) >= 0) {
+							end = ((y - 1) << 3) + x;
+							if (((b = getTileAtSpot(end)) & 8) != side || b == 0) {
+								toRet.add((end << 6) + i);
+							}
+						}
+
+						//Wait... You're not done yet! Castling
+						//if the king is unmoved
+						if ((getTileAtSpotSpecial(i) & 16) > 0) {
+							//if it's the computer's king
+							boolean inCheck = false;
+							List<Integer> opponentAttacks = this.getPossibleMoves(!isComputerMove, false, true);
+							int spotOfKing = 60 - 7 * side;
+							for (int someInt : opponentAttacks) {
+								if ((someInt >> 6) == spotOfKing) {
+									inCheck = true;
+									break;
+								}
+							}
+							if (!inCheck) {
+
+								if (side == 8) {
+									//if the queenside rook is unmoved
+									if ((getTileAtSpotSpecial(0) & 16) > 0 && getTileAtSpot(1) == 0 && getTileAtSpot(2) == 0 && getTileAtSpot(3) == 0) {
+										inCheck = false;
+										//check castling queen
+										for (int someInt : opponentAttacks) {
+											if ((someInt >> 6) == 3) {
+												inCheck = true;
+												break;
+											}
+										}
+										if (!inCheck) {
+											toRet.add((1 << 12) + (2 << 6) + i);
+										}
+									}
+									if ((getTileAtSpotSpecial(7) & 16) > 0 && getTileAtSpot(5) == 0 && getTileAtSpot(6) == 0) {
+										//check castling king
+										for (int someInt : opponentAttacks) {
+											inCheck = false;
+											if ((someInt >> 6) == 5) {
+												inCheck = true;
+												break;
+											}
+										}
+										if (!inCheck) {
+											toRet.add((1 << 12) + (6 << 6) + i);
+										}
+									}
+								} else /*Human castling*/ {
+									if ((getTileAtSpotSpecial(56) & 16) > 0 && getTileAtSpot(57) == 0 && getTileAtSpot(58) == 0 && getTileAtSpot(59) == 0) {
+										inCheck = false;
+										//check castling queen
+										for (int someInt : opponentAttacks) {
+											if ((someInt >> 6) == 59) {
+												inCheck = true;
+												break;
+											}
+										}
+										if (!inCheck) {
+
+											toRet.add((1 << 12) + (58 << 6) + i);
+										}
+									}
+									if ((getTileAtSpotSpecial(63) & 16) > 0 && getTileAtSpot(62) == 0 && getTileAtSpot(61) == 0) {
+										inCheck = false;
+										//check castling king
+										for (int someInt : opponentAttacks) {
+											if ((someInt >> 6) == 61) {
+												inCheck = true;
+												break;
+											}
+										}
+										if (!inCheck) {
+											//System.out.println("Can king Side Castle");
+											toRet.add((1 << 12) + (62 << 6) + i);
+											//System.out.println(toRet.getLast());
+										}
+									}
+								}
+							}//End in Check
+						}//End castling
+
+						break;
+				}
+			}
+
+		}
+
+		if (!shouldIgnoreChecks) {
+			ArrayList<Integer> toRetReal = new ArrayList<>(toRet.size());
+			for (int a : toRet) {
+				if (!((Chess) this.makeMove(a, isComputerMove)).isInCheck(isComputerMove)) {
+					toRetReal.add(a);
+				}
+			}
+			return toRetReal;
+		} else {
+			return toRet;
+		}
+	}
+
+	/**
+	 * The bottom 6 bits represent the initial spot, and the next 6 bits
+	 * represent the final spot
+	 *
+	 * @param move
+	 * @param isComputerTurn
+	 * @return
+	 */
+	@Override
+	public Board makeMove(int move, boolean isComputerTurn) {
+		int tile = getTileAtSpot(move & 63);
+		int start = move & 63;
+		int end = (move >> 6) & 63;
+		boolean cleanUpGhosts = true;
+		//"performance"
+		long[] newState = {state[0], state[1], state[2], state[3],
+			state[4], state[5], state[6], state[7]};
+		if ((move & (1 << 12)) > 0) {
+
+			switch (end) {
+				case 2:
+					Chess.setTileAtSpot(newState, 0, 0);
+					Chess.setTileAtSpot(newState, 3, ROOK + 24);
+					break;
+				case 6:
+					Chess.setTileAtSpot(newState, 7, 0);
+					Chess.setTileAtSpot(newState, 5, ROOK + 24);
+					break;
+				case 58:
+					Chess.setTileAtSpot(newState, 56, 0);
+					Chess.setTileAtSpot(newState, 59, ROOK + 16);
+					break;
+				case 62:
+					Chess.setTileAtSpot(newState, 63, 0);
+					Chess.setTileAtSpot(newState, 61, ROOK + 16);
+			}
+		} else {
+
+			if ((tile & 7) == PAWN) {
+				//	Sketchy pawn promotion hack
+				if (((end >> 3) == 0 || ((end >> 3) == 7))) {
+					tile += (QUEEN - PAWN);
+				}
+				//double move pawn
+
+				//en passant hacks
+				if (end - start == 16) {
+					Chess.setTileAtSpot(newState, end - 8, (1 << 5) + (GHOST_PAWN));
+					cleanUpGhosts = false;
+				} else if (start - end == 16) {
+					Chess.setTileAtSpot(newState, end + 8, +(GHOST_PAWN));
+					cleanUpGhosts = false;
+				}
+//ending en passant hacks
+				int specialTile;
+				if (((specialTile = getTileAtSpotSpecial(end)) & 31) == 16) {
+					int d = ((specialTile & 32) >> 4) - 1;
+//System.out.println(specialTile);
+					Chess.setTileAtSpot(newState, end + (d << 3), 0);
+				}
+
+			}
+
+		}
+
+		Chess.setTileAtSpot(newState, start, 0);
+		Chess.setTileAtSpot(newState, end, tile & 15);
+		for (int i = 0; i < 64; i++) {
+			if ((getTileAtSpotSpecial(i) & 31) == 16) {
+				if (end != i) {
+					Chess.setTileAtSpot(newState, i, 0);
+				}
+			}
+		}
+		return new Chess(newState);
+	}
+
+//Chess Graphics stuff
+	//These images have been used from the public domain
+	//https://creativecommons.org/licenses/by-sa/3.0/
+	public static final int SOURCE_SIZE = 45;
+
+	public static void main(String[] args) throws IOException {
+		BufferedImage b = ImageIO.read(new File("WHITE_PAWN.png"));
+		System.out.print("public static final long[] PAWN_SPRITE = new long[]{");
+		for (int i = 0; i < SOURCE_SIZE; i++) {
+			long output = 0;
+			for (int j = 0; j < SOURCE_SIZE; j++) {
+
+				Color thisColor = new Color(b.getRGB(j, i));
+				if (thisColor.getGreen() + thisColor.getRed() + thisColor.getGreen() > 100) {
+					output += ((long) 1) << j;
+				}
+			}
+			System.out.print(output + "l,");
+		}
+		System.out.println("};");
+	}
+	/**
+	 * All right, here's where it gets questionable.... What's a good data-type
+	 * to store an image? Think about it for a bit? Have an answer? You're
+	 * wrong. We use an array of longs, to store a serialized image. each line
+	 * represents one line of the image, and each bit in the long represents
+	 * whether or not that pixel is active...
+	 */
+	public static final long[] KING_SPRITE = new long[]{0l, 0l, 0l, 0l, 0l, 0l, 0l, 0l, 0l, 0l, 0l, 0l, 4194304l, 14680064l, 32505856l, 32505856l, 15064897536l, 68483612160l, 137404612352l, 274859556736l, 274860081024l, 549745328064l, 549749522368l, 274873712576l, 274873712512l, 137434759040l, 68715282176l, 34344009216l, 16172988416l, 1073725440l, 4294963200l, 4026593280l, 2684325888l, 2147475456l, 4279234560l, 3288084480l, 1073725440l, 2147475456l, 268369920l, 0l, 0l, 0l, 0l, 0l, 0l,};
+	public static final long[] QUEEN_SPRITE = new long[]{0l, 0l, 0l, 0l, 0l, 0l, 14680064l, 14704640l, 3235966976l, 3221250048l, 0l, 824633720928l, 824633720928l, 0l, 4194304l, 1077985280l, 1616953344l, 1625341952l, 70613319936l, 104973058816l, 122153060096l, 53567800832l, 62175563264l, 66537905664l, 64961486336l, 268304384l, 34359737344l, 34359737344l, 17179867136l, 0l, 4294959104l, 4294959104l, 4228374528l, 1073709056l, 8589930496l, 17179867136l, 17179867136l, 17179867136l, 1073709056l, 0l, 0l, 0l, 0l, 0l, 0l,};
+	public static final long[] ROOK_SPRITE = new long[]{0l, 0l, 0l, 0l, 0l, 0l, 0l, 0l, 0l, 16138663936l, 16138663936l, 17179867136l, 17179867136l, 17179867136l, 8589930496l, 4294959104l, 2147467264l, 2147467264l, 2147467264l, 2147467264l, 2147467264l, 2147467264l, 2147467264l, 2147467264l, 2147467264l, 2147467264l, 2147467264l, 2147467264l, 2147467264l, 2147467264l, 2147467264l, 4294959104l, 8589930496l, 8589930496l, 8589930496l, 8589930496l, 68719476224l, 68719476224l, 68719476224l, 0l, 0l, 0l, 0l, 0l, 0l,};
+	public static final long[] BISHOP_SPRITE = new long[]{0l, 0l, 0l, 0l, 0l, 0l, 14680064l, 14680064l, 14680064l, 14680064l, 0l, 14680064l, 66584576l, 133955584l, 268304384l, 532611072l, 1069514752l, 1069514752l, 2143272960l, 2143272960l, 2143272960l, 2147467264l, 2147467264l, 1073709056l, 536805376l, 133955584l, 133955584l, 536805376l, 536805376l, 536805376l, 536805376l, 1073709056l, 268304384l, 0l, 0l, 32505856l, 68719476224l, 274863226752l, 0l, 0l, 0l, 0l, 0l, 0l, 0l,};
+	public static final long[] KNIGHT_SPRITE = new long[]{0l, 0l, 0l, 0l, 0l, 0l, 0l, 0l, 1064960l, 3719168l, 8372224l, 134201344l, 536854528l, 1073733632l, 4294914048l, 8589905920l, 8589907968l, 17179868160l, 17179868160l, 34351349248l, 34351349248l, 68706893568l, 68704796416l, 68703747968l, 137431089024l, 137430695040l, 137430630336l, 137434791808l, 137434772352l, 137436860672l, 137437904896l, 137438429184l, 274877644800l, 274877644800l, 274877775872l, 274877841408l, 274877841408l, 274877841408l, 137438887936l, 0l, 0l, 0l, 0l, 0l, 0l,};
+	public static final long[] PAWN_SPRITE = new long[]{0l, 0l, 0l, 0l, 0l, 0l, 0l, 0l, 0l, 6291456l, 33030144l, 33030144l, 66846720l, 66846720l, 33030144l, 33030144l, 66846720l, 134086656l, 134086656l, 268369920l, 268369920l, 268369920l, 268369920l, 268369920l, 134086656l, 66846720l, 66846720l, 268369920l, 536838144l, 1073725440l, 2147475456l, 2147475456l, 4294963200l, 4294963200l, 4294963200l, 8589932544l, 8589932544l, 8589932544l, 8589932544l, 0l, 0l, 0l, 0l, 0l, 0l,};
+	public static final long[] EMPTY_SPRITE = new long[SOURCE_SIZE];
+
+	public static long[][] SPRITES = new long[][]{EMPTY_SPRITE, PAWN_SPRITE, KNIGHT_SPRITE, BISHOP_SPRITE, ROOK_SPRITE, QUEEN_SPRITE, KING_SPRITE};
+
+}
+
+/*
+ * To change this license header, choose License Headers in Project Properties.
+ * To change this template file, choose Tools | Templates
+ * and open the template in the editor.
+ */
+package artificialintelligence;
+
+import java.util.Comparator;
+import java.util.LinkedList;
+import java.util.List;
+
+/**
+ *
+ * @author rohan
+ */
+public class AlphaBetaNode {
+
+	public static int alphaBeta(AlphaBetaNode parent, int depth, int alpha, int beta, boolean maximizingPlayer) {
+		if (depth == ArtificialIntelligence.DEPTH || parent.board.isGameOver()) {
+			return parent.board.getValue();
+		}
+		if (parent.board.getPossibleMoves(maximizingPlayer).isEmpty()) {
+			if ((parent.board instanceof Chess)) {
+
+				for (int move : parent.board.getPossibleMoves(!maximizingPlayer)) {
+					if ((((Chess) parent.board).getTileAtSpotSpecial((move >> 6) & 63) & 7) == Chess.KING) {
+						return maximizingPlayer ? -Chess.KING_VALUE + (depth << 2) : Chess.KING_VALUE - (depth << 2);
+					}
+				}
+
+			}
+			return 0;
+
+		}
+		List<Integer> moves = parent.board.getPossibleMoves(maximizingPlayer);
+//old pre-sort heuristic
+//		if (parent.board instanceof Chess) {
+//			if (depth < 1) {
+//				Chess chessBoard = (Chess) parent.board; //yes, java makes me do this
+//				moves.sort(new Comparator<Integer>() {
+//
+//					@Override
+//					public int compare(Integer o1, Integer o2) {
+//                        return Chess.VALUES[chessBoard.getTileAtSpot((o2>>6)&63)&7] - Chess.VALUES[chessBoard.getTileAtSpot((o1>>6)&63)&7];
+//
+//					}
+//				});
+//			}
+//		}
+
+		if (maximizingPlayer) {
+			int value = Integer.MIN_VALUE;
+
+			int bestMove = 0;
+			int i = 0;
+			for (Integer move : moves) {
+				int oldValue = value;
+				value = Math.max(value, alphaBeta(new AlphaBetaNode(parent.board.makeMove(move, maximizingPlayer)), depth + 1, alpha, beta, false));
+				alpha = Math.max(alpha, value);
+				if (value != oldValue) {
+					bestMove = i;
+				}
+				i++;
+				if (alpha >= beta) {
+					break;
+				}
+			}
+			parent.bestMove = moves.get(bestMove);
+			return value;
+		} else {
+			int value = Integer.MAX_VALUE;
+
+			int bestMove = 0;
+			int i = 0;
+			for (Integer move : moves) {
+				int oldValue = value;
+				value = Math.min(value, alphaBeta(new AlphaBetaNode(parent.board.makeMove(move, maximizingPlayer)), depth + 1, alpha, beta, true));
+				beta = Math.min(beta, value);
+				if (value != oldValue) {
+					bestMove = i;
+				}
+				i++;
+				if (alpha >= beta) {
+					break;
+				}
+			}
+			parent.bestMove = moves.get(bestMove);
+			return value;
+		}
+	}
+	public final Board board;
+	private int bestMove;
+
+	AlphaBetaNode(Board board) {
+
+		this.board = board;
+	}
+
+	public int getBestMove() {
+		if (this.board instanceof Chess) {
+			int val = alphaBeta(this, 0, Integer.MIN_VALUE, Integer.MAX_VALUE, true);
+			if (Math.abs(val) > Chess.KING_VALUE / 3) {
+				Chess.doCloserAnalysis = true;
+				alphaBeta(this, 0, Integer.MIN_VALUE, Integer.MAX_VALUE, true);
+				Chess.doCloserAnalysis = false;
+			}
+		} else {
+			alphaBeta(this, 0, Integer.MIN_VALUE, Integer.MAX_VALUE, true);
+		}
+
+		return bestMove;
+	}
+
+}
+package artificialintelligence;
+
+import java.util.ArrayList;
+
+/**
+ * This class stores an Othello board using as many hacks as I came with
+ * Officially these hacks are for "performance", but to be entirely honest,
+ * they're fun
+ *
+ * @author rohan
+ */
+public class BigOthello extends GenericBoardGame {
+
+	/**
+	 * Corners receive a bonus of (C_B_W) for being owned, and a penalty for not
+	 * being owned of -C_B_W
+	 */
+	public static final int CORNER_BONUS_WEIGHT = 2;
+
+	/**
+	 * The empty tile constant
+	 */
+	public static final int EMPTY = 0;
+	/**
+	 * The X Tile constant
+	 */
+	public static final int X_TILE = 1;
+	/**
+	 * The O tile Constant
+	 */
+	public static final int O_TILE = 2;
+
+	/**
+	 * represents making no move... remember, sometimes the only winning move,
+	 * is not to play...
+	 */
+	public static final int NO_MOVE = 0b111111111111111111111111111;
+
+	/**
+	 * Display Board
+	 */
+	public static void displayBoard() {
+		for (int i = 0; i < 8; i++) {
+			for (int j = 0; j < 8; j++) {
+				long tile = ((BigOthello) ArtificialIntelligence.getMainBoard()).getTileAtSpot(i * 8 + j);
+				System.out.print(tile == EMPTY ? "_" : tile == X_TILE ? "X" : "O");
+			}
+			System.out.println();
+		}
+	}
+
+	/**
+	 * Returns a manipulated version of "state" so that the given spot now has a
+	 * given tile value
+	 *
+	 * @param state the original state
+	 * @param spot the spot to be used (less than 15)
+	 * @param tile the tile value (0 1 or 2)
+	 * @return the new version of state
+	 */
+	public static int manipulateState(int state, int spot, int tile) {
+		return ((state & (~(((3) << ((spot << 1)))))) + (tile << (spot << 1)));
+
+	}
+
+	/**
+	 * The following array stores the state of the board through questionable
+	 * bitshift
+	 */
+	private int[] state = new int[8];
+
+	/**
+	 * Make an Othello board with the original starting configuration
+	 */
+	public BigOthello() {
+		setTileAtSpot(state, 27, X_TILE);
+		setTileAtSpot(state, 28, O_TILE);
+		setTileAtSpot(state, 36, X_TILE);
+		setTileAtSpot(state, 35, O_TILE);
+	}
+
+	/**
+	 * makes an Othello board with an input state
+	 *
+	 * @param inState
+	 */
+	public BigOthello(int[] inState) {
+		state = inState;
+	}
+
+	/**
+	 * Evaluates a position for its "value" Essentially counts the number of dots
+	 * the computer has, and adds a bonus for owning corners
+	 *
+	 * @return a heuristic value of a board
+	 */
+	@Override
+	public int getValue() {
+
+		int value = 0;
+		for (int i = 0; i < 64; i++) {
+			value += getTileAtSpot(i) & 1;
+		}
+		value += CORNER_BONUS_WEIGHT * ((getTileAtSpot(0) & 1) - ((getTileAtSpot(0) & 2) << 2));
+		value += CORNER_BONUS_WEIGHT * ((getTileAtSpot(7) & 1) - ((getTileAtSpot(7) & 2) << 2));
+		value += CORNER_BONUS_WEIGHT * ((getTileAtSpot(56) & 1) - ((getTileAtSpot(56) & 2) << 2));
+		value += CORNER_BONUS_WEIGHT * ((getTileAtSpot(63) & 1) - ((getTileAtSpot(63) & 2) << 2));
+		return value; //* (1 - ((1 - notGottenFromIllegalMove)<<15));
+	}
+
+	@Override
+	public ArrayList<Integer> getPossibleMoves(boolean isComputerMove) {
+		ArrayList<Integer> moves = new ArrayList<>();
+		for (int i = 0; i < 64; i++) {
+			if (isLegalMove(i, isComputerMove)) {
+				moves.add(i);
+			}
+		}
+		if(moves.isEmpty()){
+			moves.add(NO_MOVE);
+		}
+		return moves;
+	}
+
+	/**
+	 * Checks if a spot is a legal move
+	 *
+	 * @param spot the spot to move to
+	 * @param isComputerMove whether or not it's the computers move
+	 * @return
+	 */
+	public boolean isLegalMove(int spot, boolean isComputerMove) {
+		int tile = isComputerMove ? X_TILE : O_TILE;
+		if (this.getTileAtSpot(spot) != EMPTY) {
+			return false;
+		}
+		int x = spot & 7;
+		int y = spot / 8;
+		for (int a = -1; a < 2; a++) {
+			for (int b = -1; b < 2; b++) {
+				if (a != 0 || b != 0) {
+					int i = 1;
+					boolean foundEnd = false;
+
+					while (true) {
+						int xOne = x + a * i;
+						int yOne = y + b * i;
+						int z;
+						if (xOne < 0 || xOne >= 8 || yOne < 0 || yOne >= 8 || (z = getTileAtSpot(yOne * 8 + xOne)) == EMPTY) {
+							break;
+						}
+						if (z == tile) {
+							foundEnd = true;
+							break;
+						}
+						i++;
+					}
+					if (foundEnd) {
+						for (int j = 1; j < i; j++) {
+							return true;
+						}
+					}
+				}
+			}
+		}
+		return false;
+	}
+
+	public int getSize(){
+		return 8;
+	}
+	/**
+	 * Make a declared move based on it's description, and who's moving
+	 *
+	 * @param m the move to be made
+	 * @param isComputerMove whether or not the computer is making it
+	 * @return a new copy of the board. Note, boards, are generally immutable,
+	 */
+	@Override
+	public Board makeMove(int m, boolean isComputerMove) {
+		int[] newState = new int[]{state[0], state[1], state[2], state[3], state[4], state[5], state[6], state[7]};
+		if(m == NO_MOVE){
+			return new BigOthello(newState);
+		}
+		int tile = isComputerMove ? X_TILE : O_TILE;
+		int spot = m;
+		int x = spot & 7;
+		int y = spot / 8;
+		//looks stupid, but
+
+		newState[y] = manipulateState(newState[y], x, tile);
+		for (int a = -1; a < 2; a++) {
+			for (int b = -1; b < 2; b++) {
+				if (a != 0 || b != 0) {
+					int i = 1;
+					boolean foundEnd = false;
+
+					while (true) {
+						int xOne = x + a * i;
+						int yOne = y + b * i;
+						int z;
+						if (xOne < 0 || xOne >= 8 || yOne < 0 || yOne >= 8 || (z = getTileAtSpot(yOne * 8 + xOne)) == EMPTY) {
+							break;
+						}
+						if (z == tile) {
+							foundEnd = true;
+							break;
+						}
+						i++;
+					}
+					if (foundEnd) {
+						//System.out.println("FOUND:"+i);
+						for (int j = 1; j < i; j++) {
+							newState[(y + b * j)] = manipulateState(newState[(y + b * j)], (x + a * j), tile);
+						}
+					}
+				}
+			}
+		}
+		BigOthello o = new BigOthello(newState);
+
+		return o;
+
+	}
+
+	/**
+	 * Takes in an array of state, and sets a given spot to a given tile value
+	 *
+	 * @param toMod the given state to be modified in place
+	 * @param spot the spot being used
+	 * @param tile the tile being chosen
+	 */
+	public static void setTileAtSpot(int[] toMod, int spot, int tile) {
+		toMod[spot >> 3] = manipulateState(toMod[spot >> 3], spot & 7, tile);
+	}
+
+	@Override
+	public boolean isGameOver() {
+		return false;
+	}
+
+	/**
+	 * Gets a tile at a given spot (sorry, had to)
+	 *
+	 * @param spot
+	 * @return
+	 */
+	@Override
+	public int getTileAtSpot(int spot) {
+		return (state[spot >> 3] & (3 << ((spot & 7) << 1))) >> ((spot & 7) << 1);
+	}
+
+}
+package RayTrace;
+
+import java.awt.*;
+
+public class VectorMath {
+    public static final double[] ELEM_I = new double[]{1,0,0};
+    public static final double[] ELEM_J = new double[]{0,1,0};
+    public static final double[] ELEM_K = new double[]{0,0,1};
+    /**
+     * Returns a noise vector, to provide "diffused" reflections;
+     */
+    public static double[] getNoiseVector(double NOISE){
+        return new double[]{Math.random()*NOISE -NOISE/2, Math.random()*NOISE-NOISE/2,Math.random()*NOISE-NOISE/2};
+    }
+    /**
+     * Matrix Product (3x3) by vector...
+     */
+    public static double[] matrixProduct(double[][] A, double[] b){
+        return new double[]{
+                dot(new double[]{A[0][0],A[1][0],A[2][0]},b),
+                dot(new double[]{A[0][1],A[1][1],A[2][1]},b),
+                dot(new double[]{A[0][2],A[1][2],A[2][2]},b)
+        };
+    }
+    /**
+     * Invert a 3x3 matrix
+     */
+    public static double[][] invert3(double[][] A){
+        double det = det3(A);
+        A = transpose(A);
+        A = checkerboardSigns(A);
+        A = minors(A);
+        A = new double[][]{scale(A[0],1/det), scale(A[1], 1/det),scale(A[2], 1/det)};
+        return A;
+
+    }
+    public static double[][] transpose(double[][] in){
+        double[][] out = new double[in[0].length][in.length];
+        for(int i = 0;i<in.length;i++){
+            for(int j = 0;j<in[0].length;j++){
+                out[j][i] = in[i][j];
+            }
+        }
+        return out;
+    }
+    public static double det3(double[][] A){
+        return A[0][0] * (A[1][1] * A[2][2]- A[2][1]*A[1][2]) - A[1][0] * (A[0][1] * A[2][2]- A[2][1]*A[0][2])
+                +  A[2][0] * (A[0][1] * A[1][2]- A[1][1]*A[0][2]);
+    }
+
+    /**
+     * det(|a c|
+     *     |b d|
+     * @param vectorized <a,b,c,d>
+     * @return
+     */
+    private static double det2(double[] vectorized){
+        return vectorized[0]*vectorized[3]-vectorized[1]*vectorized[2];
+    }
+    public static double[][] minors(double[][] A){
+        double[][] temp = new double[3][3];
+        for(int i = 0;i<3;i++){
+            for(int j = 0;j<3;j++){
+                double[] vectorized = new double[4];
+                int index = 0;
+                for(int i1 = 0;i1<3;i1++){
+                    for(int j1 = 0; j1<3;j1++){
+                        if(i1!=i && j1!=j){
+                            vectorized[index] = A[i1][j1];
+                            index +=1;
+                        }
+                    }
+                }
+                temp[i][j] = det2(vectorized);
+            }
+        }
+        return temp;
+    }
+
+    /**
+     * in place checkerboards signs
+     * @param A
+     * @return
+     */
+    public static double[][] checkerboardSigns(double[][] A){
+        for(int i = 0;i<A.length;i++){
+            for(int j = 0;j<A.length;j++){
+                A[i][j] *= 1 - (((i+j)&1)<<1); //branchless hack!
+            }
+        }
+        return A;
+    }
+
+    /**
+     * Return a "vectorized" weighted average between a and b giving a ratio weight, and b 1 - ratio
+     *
+     * @param a
+     * @param b
+     * @param ratio
+     * @return
+     */
+    public static double[] mix(double[] a, double[] b, double ratio) {
+        return add(scale(a, ratio), scale(b, 1 - ratio));
+    }
+
+    /**
+     * Adds two colors, clamps the size to be [0,256)
+     *
+     * @param c1
+     * @param c2
+     */
+    public static Color add(Color c1, Color c2) {
+        return new Color(Math.min(255, c1.getRed() + c2.getRed()), Math.min(255, c1.getGreen() + c2.getGreen()), Math.min(255, c1.getBlue() + c2.getBlue()));
+    }
+
+    /**
+     * Adds two three dimensional vectors
+     */
+    public static double[] add(double[] v1, double[] v2) {
+        return new double[]{v1[0] + v2[0], v1[1] + v2[1], v1[2] + v2[2]};
+    }
+
+    /**
+     * Subtracts two three dimensional vectors
+     */
+    public static double[] subtract(double[] v1, double[] v2) {
+        return new double[]{v1[0] - v2[0], v1[1] - v2[1], v1[2] - v2[2]};
+    }
+
+    /**
+     * Defines dot product (inner product)
+     */
+    public static double dot(double[] v1, double[] v2) {
+        return v1[0] * v2[0] + v1[1] * v2[1] + v1[2] * v2[2];
+    }
+
+    /**
+     * Defines scalar multiplication, on three dimensional vectors
+     *
+     * @param v1 input vector
+     * @param a  scalar
+     * @return a scaled version
+     */
+    public static double[] scale(double[] v1, double a) {
+        return new double[]{v1[0] * a, v1[1] * a, v1[2] * a};
+    }
+
+    /**
+     * Defines Euclidean norm on a three dimensional vector
+     */
+    public static double norm(double[] v1) {
+        return Math.sqrt(v1[0] * v1[0] + v1[1] * v1[1] + v1[2] * v1[2]);
+    }
+
+    /**
+     * @param v1
+     * @return
+     */
+    public static double[] normalize(double[] v1) {
+        return scale(v1, 1 / norm(v1));
+    }
+
+}
+
+
+/*
+ * Feel free to modify and distribute the code and all relevant documentation
+ * This code is provided as is and the author explicitly disclaims any warranty
+ */
+import java.awt.Color;
+import java.awt.Dimension;
+import java.awt.Graphics;
+import java.awt.event.KeyEvent;
+import java.awt.event.KeyListener;
+import java.io.File;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Scanner;
+import java.util.Stack;
+import javax.swing.JFrame;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+
+/**
+ * S.I.L.O.S interpreter S.I.L.O.S or SIL is a simple interpreted, imperative
+ * language
+ *
+ * @author rohan
+ */
+public class Silos {
+
+	/**
+	 * This string contains the source for the standard libraries. It contains four
+	 * methods which are case sensitive Help -> Outputs useful help information to
+	 * the console CosX returns 479001600*cos(x/10000) using a 12th order taylor
+	 * polynomial receives input via the top of the zeroth stack and uses the m M
+	 * and ? variables SinX returns sin(x/10000)*39916800 using an 11th order
+	 * taylor polynomial Receives input via the top of the zeroth stack and uses
+	 * the m M and ? variables returns to the top of the zeroth stack accurate to
+	 * three significant figures from [-pi,pi] and Cat functions as a cat program
+	 */
+	public static final String[] stdlib = {"GOTO EndOfTheStandardLibraries", "/**", "* This is the source code presented for the standard libraries of SILOS", "* There is no need to download this file as it is attached with the release (in \"Silos.java\")", "* simply import this library by using \"leverage stdlib\"", "* To make a library of your own, follow the standards presented in this code. Most notably,", "* Start the code with a goto to skip all of the utility methods. ", "* Then, to import your code use \"leverage fileName.txt\" (replacing with the fully qualified file name)", "*/", "", "//Trig Methods", "", "/**", "* Sin method, returns sin(x/10000)*39916800 using an 11th order taylor polynomial", "* Receives input via the top of the zeroth stack and uses the m M and ? variables", "* returns to the top of the zeroth stack accurate to three significant figures from [-pi,pi]", "*/", "funcSinX", "    stackPop 0", "    m=(99792*m)/25-(2079*m^3)/312500000+(2079*m^5)/625000000000000000-(99*m^7)/125000000000000000000000000+(11*m^9)/100000000000000000000000000000000000-m^11/100000000000000000000000000000000000000000000 ", "    stack 0 m", "return", "", "/**", "* Cos method returns 479001600*cos(x/10000) using an 12th order taylor polynomial", "* receives input via the top of the zeroth stack and uses the m M and ? variables", "*/", "funcCosX", "    stackPop 0", "    m = 479001600*(1-m^2/200000000+m^4/240000000000000000-m^6/720000000000000000000000000+m^8/4032000000000000000000000000000000000-m^10/36288000000000000000000000000000000000000000000+m^12/479001600000000000000000000000000000000000000000000000000)", "    stack 0 m", "return", "/**", "* Echo out the first line of standard input uses m and M as a variable", "*/", "funcCat", "    loadLine", "    m=256", "    M=get m", "    lblTOPOFCATLOOP", "        printChar M", "        m+1", "        M =get m", "    if M TOPOFCATLOOP", "return", "//String manipulation Functions V", "", "//This area has been allocated for string manipulation functions", "", "//End of String manipulation Functions ^", "", "//This method will help new users by providing documentation", "funcHelp", "printLine GitHub for this language", "printLine https://github.com/rjhunjhunwala/S.I.L.O.S", "printLine IDE for this language", "printLine https://github.com/rjhunjhunwala/S.I.D.E", "return", "lblEndOfTheStandardLibraries"};
+//The number of stacks and queues the user may access
+	public static final int SIZE = 32;
+
+	//Initialize stacks
+	public static final Stack<Integer>[] stacks = new Stack[SIZE];
+	public static final ArrayDeque<Integer>[] q = new ArrayDeque[SIZE];
+
+	/**
+	 * This integer[] represents the heap of memory which can be addressed
+	 */
+	private static int[] mem;
+
+	//Strings are stored in this array to avoid expensive runtime string operation
+	private static String[] texts;
+
+	//OPCODES
+	private final static int GOTO = 0 << 8;
+	private final static int GOSUB = 1 << 8;
+	private final static int RETURN = 2 << 8;
+	private final static int PRINTLINE = 3 << 8;
+	private final static int PRINTCHAR = 4 << 8;
+	private final static int PRINT = 5 << 8;
+	private final static int PRINTINT = 6 << 8;
+	private final static int SET = 7 << 8;
+	private final static int GET = 8 << 8;
+	private final static int IF = 9 << 8;
+	private final static int READIO = 10 << 8;
+	private final static int RAND = 11 << 8;
+	private final static int LOADLINE = 12 << 8;
+	private final static int CANVAS = 13 << 8;
+	private final static int WAIT = 14 << 8;
+	private final static int UNDOCOPCODE = 15 << 8;
+	private final static int PEN = 16 << 8;
+	private final static int BIND = 17 << 8;
+	private final static int REFRESH = 18 << 8;
+	private final static int ADD = 19 << 8;
+	private final static int SUB = 20 << 8;
+	private final static int MUL = 21 << 8;
+	private final static int DIV = 22 << 8;
+	private final static int MOD = 23 << 8;
+	private final static int ABS = 24 << 8;
+	private final static int POW = 25 << 8;
+	private final static int AND = 26 << 8;
+	private final static int OR = 27 << 8;
+	private final static int XOR = 28 << 8;
+	private final static int XNOR = 29 << 8;
+	private final static int NOT = 30 << 8;
+	private final static int LSHIFT = 31 << 8;
+	private final static int RSHIFT = 32 << 8;
+	private final static int ASSIGN = 33 << 8;
+	private final static int NEWOBJ = 34 << 8;
+	private static final int MOVEOBJ = 35 << 8;
+	private static final int PRINTINTNOLINE = 36 << 8;
+	private static final int STACK = 37 << 8;
+	private static final int QUEUE = 38 << 8;
+	private static final int STACK_POP = 39 << 8;
+	private static final int QUEUE_POP = 40 << 8;
+	private static final int POP_UP = 41 << 8;
+	private static final int GET_STRING_POP_UP = 42 << 8;
+ private static final int ALLOC = 43 << 8;
+	private static final int clear = 44 << 8;
+
+
+	//MODES
+	private final static int INTEGER = 0;
+	private final static int VARIABLE = 1;
+	private final static int PARSABLE = 2;
+
+
+	/**
+	 * Prints out the prompt and then returns the string user types
+	 *
+	 * @param prompt the prompt for the user
+	 * @return the string typed into the console
+	 */
+	public static String getStringFromSTDIN(String prompt, Scanner sc) {
+		System.out.println(prompt);
+		String line = sc.nextLine();
+		return line;
+	}
+
+	/**
+	 * Takes in an arrayList of Strings and parses it to an array list of doubles.
+	 * It treats "\" as an escape for the minus sign
+	 */
+	private static ArrayList<Double> parseToDoubles(ArrayList<String> arrayList) {
+		ArrayList<Double> ret = new ArrayList<>();
+		for (String s : arrayList) {
+			try {
+				ret.add(Double.parseDouble(s.replaceAll("rand", Math.random() + "").replaceAll("\\Q\\\\E", "-").replaceAll(" ", "")));
+			} catch (Exception ex) {
+				ret.add(mem[s.charAt(0)] / 1.0);
+			}
+		}
+		return ret;
+	}
+
+	/**
+	 * Allows Programs to have (somewhat) asynchronous listening to keyboard input
+	 */
+	static class Input implements KeyListener {
+
+		static int[] bindings = new int[]{};
+
+		public static void setNewBindings(int[] bind) {
+			bindings = new int[bind.length / 2 - 1];
+			for (int i = 0; i < bindings.length; i++) {
+				bindings[i] = evalToken(bind[i * 2 + 1], bind[i * 2 + 2], 0);
+			}
+		}
+
+		@Override
+		public void keyTyped(KeyEvent e) {
+
+		}
+
+		@Override
+		public void keyPressed(KeyEvent e) {
+			char c = e.getKeyChar();
+			for (int i = 0; i < bindings.length; i += 2) {
+				if (c == bindings[i]) {
+					//System.out.println(c + ":pressed!");
+					mem[bindings[i + 1]] = 1;
+				}
+			}
+		}
+
+		@Override
+		public void keyReleased(KeyEvent e) {
+
+		}
+
+	}
+
+	static class Drawable {
+
+		int x, y;
+		int type;
+		int width;
+		int height;
+		Color color = Canvas.pen;
+
+		public Drawable(int inType, int inWidth, int inHeight) {
+			type = inType;
+			width = inWidth;
+			height = inHeight;
+		}
+	}
+
+//Files with this name are being invoked from the IDE
+	public static String IDEFileName = "234567890-45678900ihb567890oijhb213dsa_TempFILE_v";
+
+	/**
+	 * The main interpretation code
+	 *
+	 * @param args the command line arguments to be passed from the online
+	 * interpreter the first argument represents a fileName, and the rest represent
+	 * a source of input Feeding in any number of command line arguments will
+	 * generally disable interactivity.
+	 */
+	public static void main(String... args) {
+		for (int i = 0; i < SIZE; i++) {
+			q[i] = new ArrayDeque<Integer>();
+			stacks[i] = new Stack<Integer>();
+		}
+		Stack<Integer> stack = new Stack<>();
+		Scanner sc = new Scanner(System.in);
+		boolean interactive = (args.length == 0);
+
+		int[][] program = compile(args.length == 0 ? getStringFromSTDIN("FileName?", sc) : args[0]);
+		if (args.length == 1) {
+			if (args[0].equals(IDEFileName)) {
+				interactive = true;
+			}
+		}
+
+		int arg_index = 1;
+		int ptr = 0;
+		int length = program.length;
+		int[] tokens = null;
+		memory = mem;
+//for(int[] p:program)System.out.println(java.util.Arrays.toString(p));
+//for(String s:texts)System.out.println(s);
+		while (ptr < length) {
+			try {
+				tokens = program[ptr];//System.out.println(mem['x']);System.out.println(ptr+" "+(tokens[0]>>8));
+				switch (tokens[0] & ~0b11111111) {
+					case GOTO:
+						ptr = tokens[1];
+						continue;
+					case IF:
+						ptr = evalToken(tokens[0], tokens[1], 0) > 0 ? tokens[2] : ptr + 1;
+						continue;
+					case GOSUB:
+						stack.add(ptr);
+						ptr = tokens[1];
+						continue;
+					case RETURN:
+						ptr = stack.pop();
+						break;
+					case PRINTLINE:
+						System.out.println(tokens.length > 1 ? texts[tokens[1]] : "");
+						break;
+					case POP_UP:
+
+						if (Canvas.c != null) {
+							JOptionPane.showMessageDialog(Canvas.c, (tokens.length > 1 ? texts[tokens[1]] : ""), Canvas.c.getTitle(), JOptionPane.INFORMATION_MESSAGE);
+						}
+
+						break;
+					case GET_STRING_POP_UP:
+						if (Canvas.c != null) {
+							String temp = JOptionPane.showInputDialog(Canvas.c, (tokens.length > 1 ? texts[tokens[1]] : ""), Canvas.c.getTitle(), JOptionPane.INFORMATION_MESSAGE);
+							char[] in = temp.toCharArray();
+							for (int i = 0, j = 256; i < in.length; i++, j++) {
+								mem[j] = in[i];
+							}
+						}
+						break;
+					case PRINTCHAR:
+						System.out.print((char) evalToken(tokens[0], tokens[1], 0));
+						break;
+					case NEWOBJ:
+						int type = evalToken(tokens[0], tokens[1], 0);
+						int width = evalToken(tokens[0], tokens[2], 1);
+						int height = evalToken(tokens[0], tokens[3], 2);
+						Drawable next = new Drawable(type, width, height);
+						Canvas.Panel.toDraw.add(next);
+						break;
+					case MOVEOBJ:
+						int index = evalToken(tokens[0], tokens[1], 0);
+						int x = evalToken(tokens[0], tokens[2], 1);
+						int y = evalToken(tokens[0], tokens[3], 2);
+
+						Drawable d = Canvas.Panel.toDraw.get(index);
+						d.x = x;
+						d.y = y;
+						break;
+					case PRINT:
+						//potential no-op
+						System.out.print(tokens.length > 1 ? texts[tokens[1]] : "");
+						break;
+					case PRINTINT:
+						System.out.println(evalToken(Silos.VARIABLE, tokens[1], 0));
+						break;
+					case PRINTINTNOLINE:
+						System.out.print(evalToken(Silos.VARIABLE, tokens[1], 0));
+						break;
+					case ASSIGN:
+						if (((tokens[0] >> 1) & 1) == 1) {
+							mem[tokens[1]] = (int) parse(texts[tokens[2]]);
+						} else {
+							mem[tokens[1]] = evalToken(tokens[0], tokens[2], 0);
+						}
+						break;
+					case STACK:
+
+						stacks[evalToken(tokens[0], tokens[1], 0)].push(evalToken(tokens[0], tokens[2], 1));
+
+						break;
+					case QUEUE:
+
+						q[evalToken(tokens[0], tokens[1], 0)].add(evalToken(tokens[0], tokens[2], 1));
+
+						break;
+					case QUEUE_POP:
+						mem['m'] = q[evalToken(tokens[0], tokens[1], 0)].isEmpty() ? 0 : q[evalToken(tokens[0], tokens[1], 0)].remove();
+						break;
+					case STACK_POP:
+						mem['m'] = stacks[evalToken(tokens[0], tokens[1], 0)].isEmpty() ? 0 : stacks[evalToken(tokens[0], tokens[1], 0)].pop();
+						break;
+					case GET:
+						mem[tokens[1]] = mem[evalToken(Silos.INTEGER, evalToken(tokens[0], tokens[2], 0), 0)];
+						break;
+					case ADD:
+						mem[tokens[1]] += evalToken(tokens[0], tokens[2], 0);
+						break;
+					case SUB:
+						mem[tokens[1]] -= evalToken(tokens[0], tokens[2], 0);
+						break;
+					case MUL:
+						mem[tokens[1]] *= evalToken(tokens[0], tokens[2], 0);
+						break;
+					case DIV:
+						mem[tokens[1]] /= evalToken(tokens[0], tokens[2], 0);
+						break;
+					case MOD:
+						mem[tokens[1]] %= evalToken(tokens[0], tokens[2], 0);
+						break;
+					case POW:
+						mem[tokens[1]] = (int) Math.pow(mem[tokens[1]], evalToken(tokens[0], tokens[2], 0));
+						break;
+					case ABS:
+						mem[tokens[1]] = Math.abs(mem[tokens[1]]);
+						break;
+					case AND:
+						mem[tokens[1]] &= evalToken(tokens[0], tokens[2], 0);
+						break;
+					case OR:
+						mem[tokens[1]] |= evalToken(tokens[0], tokens[2], 0);
+						break;
+					case XOR:
+						mem[tokens[1]] ^= evalToken(tokens[0], tokens[2], 0);
+						break;
+					case XNOR:
+						mem[tokens[1]] ^= ~evalToken(tokens[0], tokens[2], 0);
+						break;
+					case NOT:
+						mem[tokens[1]] = ~mem[tokens[1]];
+						break;
+					case LSHIFT:
+						mem[tokens[1]] <<= evalToken(tokens[0], tokens[2], 0);
+						break;
+					case RSHIFT: //signed right-shift
+						mem[tokens[1]] >>= evalToken(tokens[0], tokens[2], 0);
+						break;
+					case SET:
+						mem[evalToken(tokens[0], tokens[1], 0)] = evalToken(tokens[0], tokens[2], 1);
+						break;
+					case READIO:
+						if (interactive) {
+							if (tokens.length > 1) {
+								mem['i'] = Integer.parseInt(getStringFromSTDIN(texts[tokens[1]], sc));
+							} else {
+								mem['i'] = Integer.parseInt(sc.nextLine());
+							}
+						} else {
+							mem['i'] = Integer.parseInt(args[arg_index++]);
+						}
+						break;
+					case RAND:
+						mem['r'] = (int) (Math.random() * evalToken(tokens[0], tokens[1], 0));
+						break;
+					case LOADLINE:
+						char[] in;
+						if (interactive) {
+							if (tokens.length > 1) {
+								in = getStringFromSTDIN(texts[tokens[1]], sc).toCharArray();
+							} else {
+								in = sc.nextLine().toCharArray();
+							}
+						} else {
+							in = args[arg_index++].toCharArray();
+						}
+						for (int i = 0, j = 256; i < in.length; i++, j++) {
+							mem[j] = in[i];
+						}
+						break;
+
+					case CANVAS:
+						if (interactive) {
+							Canvas.createCanvas(
+															evalToken(tokens[0], tokens[1], 0),
+															evalToken(tokens[0], tokens[2], 1),
+															texts[tokens[3]]
+							);
+						}
+						break;
+					case WAIT:
+						Thread.sleep(evalToken(tokens[0], tokens[1], 0));
+						break;
+
+					case PEN:
+						if (Canvas.createdCanvas) {
+							Canvas.pen = new Color(
+															evalToken(tokens[0], tokens[1], 0),
+															evalToken(tokens[0], tokens[2], 1),
+															evalToken(tokens[0], tokens[3], 2)
+							);
+						}
+						break;
+					case BIND:
+						Input.setNewBindings(tokens);
+						break;
+					case REFRESH:
+						if (Canvas.createdCanvas) {
+							Canvas.c.repaint();
+						}
+						break;
+				}
+				ptr++;
+			} catch (Exception ex) {
+				ex.printStackTrace();
+				//praise vb "on error resume next"!
+				ptr++;
+			}
+		}
+		System.exit(0);
+	}
+
+	/**
+	 * GUI Class
+	 */
+	static class Canvas extends JFrame {
+
+		static class Panel extends JPanel {
+
+			public static ArrayList<Drawable> toDraw = new ArrayList<>();
+
+			public Panel(int inX, int inY) {
+				x = inX;
+				y = inY;
+			}
+			public int x, y;
+
+			@Override
+			public void paintComponent(Graphics g) {
+				super.paintComponent(g);
+				for (Drawable d : toDraw) {
+					g.setColor(d.color);
+					if (d.type == 1) {
+						g.fillOval(d.x, d.y, d.width, d.height);
+					} else  if(d.type==0){
+						g.fillRect(d.x, d.y, d.width, d.height);
+					}else{
+						g.drawLine(d.x, d.y, d.x+d.width, d.y+d.height);
+					}
+				}
+			}
+
+			@Override
+			public Dimension getPreferredSize() {
+				return new Dimension(x, y);
+			}
+		}
+
+		public static Color pen = Color.black;
+		static boolean createdCanvas = false;
+		public static Canvas c;
+
+		private Canvas(int x, int y, String message) {
+			super(message);
+			this.setVisible(true);
+			this.add(new Panel(x, y));
+			this.pack();
+			this.setAlwaysOnTop(true);
+			this.setLocationRelativeTo(null);
+			this.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+			this.addKeyListener(new Input());
+			this.setResizable(false);
+		}
+
+		public static void createCanvas(int x, int y, String message) {
+			if (!createdCanvas) {
+				createdCanvas = true;
+				c = new Canvas(x, y, message);
+					}
+				}
+
+			}
+
+
+
+	/**
+	 * Another way to temporarily hold the memory
+	 */
+	static int[] memory;
+
+	/**
+	 * Compile the program, and link other sources
+	 *
+	 * @param fileName
+	 * @return A two dimensional integer array representing a parsed program
+	 */
+	@SuppressWarnings({"rawtypes", "unchecked"})
+	public static int[][] compile(String fileName) {
+		ArrayList<String> tokens = new ArrayList<>();
+		try {
+			File textFile = new File(fileName);
+			Scanner sc = new Scanner(textFile);
+			while (sc.hasNextLine()) {
+				tokens.add(sc.nextLine().replaceAll("^\\s+", ""));
+			}
+			sc.close();
+			List program = new ArrayList();
+			String[] replace = new String[]{""};
+			if (tokens.size() > 1 && tokens.get(1).startsWith("def")) {
+				replace = tokens.remove(1).split(" ");
+			}
+			if (tokens.size() > 0) {
+				try {
+					mem = new int[Integer.parseInt(tokens.get(0))];
+					tokens.remove(0);
+				}//allocates the memory on the first line of code
+				catch (Exception ex) {
+					mem = new int[8192];//default size if there is no allocation specified
+				}
+			}
+
+			int progSize = tokens.size();
+			String[] stuff = new String[progSize];
+			for (int i = 0; i < progSize; i++) {
+				stuff[i] = tokens.get(i);
+			}
+			String[] replace2 = null;
+			String t;
+			for (String s : stuff) {
+				String s1 = s;
+				for (int j = 1; j < replace.length; j += 2) {
+					s1 = s1.replaceAll(replace[j], replace[j + 1]);
+				}
+				String[] temp = s.split(" ");
+				if (temp[0].equals("leverage")) {
+					for (int i = 1; i < temp.length; i++) {
+						if (!temp[i].equals("stdlib")) {
+							textFile = new File(temp[i]);
+							sc = new Scanner(textFile);
+							while (sc.hasNextLine()) {
+								t = sc.nextLine();
+								t = t.replaceAll("^\\s+", "");
+								if (t.startsWith("def")) {
+									replace2 = t.split(" ");
+								} else if (replace2 != null) {
+									for (int j = 1; j < replace2.length; j += 2) {
+										t = t.replaceAll(replace2[j], replace2[j + 1]);
+									}
+								}
+								tokens.add(t);
+							}
+						} else {
+							for (String line : stdlib) {
+								tokens.add(line.replaceAll("^\\s+", ""));
+							}
+						}
+					}
+				}
+			}
+			ArrayList<String> labels = new ArrayList<>();
+			ArrayList<Integer> label_pos = new ArrayList<>();
+			ArrayList<String> label_temp = new ArrayList<>();
+			ArrayList<String> funcs = new ArrayList<>();
+			ArrayList<Integer> func_pos = new ArrayList<>();
+			ArrayList<String> func_temp = new ArrayList<>();
+			ArrayList<String> texts = new ArrayList<>();
+			for (int i = 0; i < tokens.size(); i++) {
+				String command = tokens.get(i);
+				if (command.startsWith("def")
+												|| command.startsWith("//")
+												|| command.startsWith("#")
+												|| command.startsWith("*")
+												|| command.startsWith("/*")) {
+					continue;
+				}
+				for (int j = 1; i < progSize && j < replace.length; j += 2) {
+					command = command.replaceAll(replace[j], replace[j + 1]);
+				}
+
+				if (command.length() == 0) {
+					continue;
+				}
+				String temp = command;
+				if (command.startsWith("lbl")) {
+					if (command.indexOf(' ') >= 0) {
+						//GOTO only takes the first token
+						//if label has space, it will never be accessed
+						continue;
+					}
+					String label = command.substring(3);
+					if (labels.contains(label)) {
+						System.err.println("The label " + label + " is repeated in line " + (i + 1) + ".");
+						//only use the first occurrence
+						continue;
+					}
+					labels.add(label);
+					label_pos.add(program.size());
+					continue;
+				}
+				if (command.startsWith("func")) {
+					if (command.indexOf(' ') >= 0) {
+						//GOSUB only takes the first token
+						//if function name has space, it will never be accessed
+						continue;
+					}
+					String func = command.substring(4);
+					if (funcs.contains(func)) {
+						System.err.println("The function name " + func + " is repeated in line " + (i + 1) + ".");
+						//only use the first occurrence
+						continue;
+					}
+					funcs.add(func);
+					func_pos.add(program.size());
+					continue;
+				}
+				String command_clone = new String(command);
+				command = command.replaceAll("\\s+", " ");
+				if (command.length() > 1) {
+					switch (command.charAt(1)) {
+						case '+':
+						case '-':
+						case '*':
+						case '/':
+						case '%':
+						case '^':
+						case '=':
+						case '|':
+						case '&':
+						case ':':
+						case '!':
+						case '?':
+						case '~':
+						case '<':
+						case '>':
+							command = command.charAt(0) + " " + command.substring(1);
+							break;
+					}
+				}
+				if (command.length() > 2) {
+					switch (command.charAt(2)) {
+						case '+':
+						case '-':
+						case '*':
+						case '/':
+						case '%':
+						case '^':
+						case '=':
+						case '|':
+						case '&':
+						case ':':
+						case '!':
+						case '?':
+						case '~':
+						case '<':
+						case '>':
+							if (command.length() > 3 && command.charAt(3) != ' ') {
+								command = command.substring(0, 3) + " " + command.substring(3);
+							}
+							break;
+					}
+				}
+				String[] words = command.split(" ");
+				if (words.length == 0) {
+					continue;
+				}
+
+				String instruction = words[0];
+				//control flows
+				if (instruction.equals("GOTO")) {
+					String label = words[1];
+					int index = label_temp.indexOf(label);
+					if (index == -1) {
+						index = label_temp.size();
+						label_temp.add(label);
+					}
+					program.add(new int[]{Silos.GOTO, index});
+				}
+				if (instruction.equals("GOSUB")) {
+					String func = words[1];
+					int index = func_temp.indexOf(func);
+					if (index == -1) {
+						System.err.println("Warning possible undeclared function. Could not find symbol:" + func + "\nThis could be because the function is undefined, or defined later.");
+						index = func_temp.size();
+						func_temp.add(func);
+					}
+					program.add(new int[]{Silos.GOSUB, index});
+					continue;
+				}
+
+				//IO
+				if (instruction.equals("readIO")) {
+					if (command_clone.length() > 7) {
+						String text = command_clone.substring(7);
+						int index = texts.indexOf(text);
+						if (index == -1) {
+							index = texts.size();
+							texts.add(text);
+						}
+						program.add(new int[]{Silos.READIO, index});
+					} else {
+						program.add(new int[]{Silos.READIO});
+					}
+					continue;
+				}
+				if (instruction.equals("loadLine")) {
+					if (command_clone.length() > 9) {
+						String text = command_clone.substring(9);
+						int index = texts.indexOf(text);
+						if (index == -1) {
+							index = texts.size();
+							texts.add(text);
+						}
+						program.add(new int[]{Silos.LOADLINE, index});
+					} else {
+						program.add(new int[]{Silos.LOADLINE});
+					}
+					continue;
+				}
+				if (instruction.equals("loadLinePopUp")) {
+					if (command_clone.length() > 14) {
+						String text = command_clone.substring(14);
+						int index = texts.indexOf(text);
+						if (index == -1) {
+							index = texts.size();
+							texts.add(text);
+						}
+						program.add(new int[]{Silos.GET_STRING_POP_UP, index});
+					} else {
+						program.add(new int[]{Silos.GET_STRING_POP_UP});
+					}
+					continue;
+				}
+				if (instruction.equals("prompt")) {
+					if (command_clone.length() > 9) {
+						String text = command_clone.substring(9);
+						int index = texts.indexOf(text);
+						if (index == -1) {
+							index = texts.size();
+							texts.add(text);
+						}
+						program.add(new int[]{Silos.GET_STRING_POP_UP, index});
+					} else {
+						program.add(new int[]{Silos.GET_STRING_POP_UP});
+					}
+					continue;
+				}
+				if (instruction.equals("print")) {
+					if (command_clone.length() > 6) {
+						String text = command_clone.substring(6);
+						int index = texts.indexOf(text);
+						if (index == -1) {
+							index = texts.size();
+							texts.add(text);
+						}
+						program.add(new int[]{Silos.PRINT, index});
+					} else {
+						program.add(new int[]{Silos.PRINT});
+					}
+					continue;
+				}
+				if (instruction.equals("popUp")) {
+					if (command_clone.length() > 6) {
+						String text = command_clone.substring(6);
+						int index = texts.indexOf(text);
+						if (index == -1) {
+							index = texts.size();
+							texts.add(text);
+						}
+						program.add(new int[]{Silos.POP_UP, index});
+					} else {
+						program.add(new int[]{Silos.POP_UP});
+					}
+					continue;
+				}
+				if (instruction.equals("alert")) {
+
+					if (command_clone.length() > 6) {
+						String text = command_clone.substring(6);
+						int index = texts.indexOf(text);
+						if (index == -1) {
+							index = texts.size();
+							texts.add(text);
+						}
+
+						program.add(new int[]{Silos.POP_UP, index});
+					} else {
+						program.add(new int[]{Silos.POP_UP});
+					}
+					continue;
+				}
+
+				if (instruction.equals("printLine")) {
+					if (command_clone.length() > 10) {
+						String text = command_clone.substring(10);
+						int index = texts.indexOf(text);
+						if (index == -1) {
+							index = texts.size();
+							texts.add(text);
+						}
+						program.add(new int[]{Silos.PRINTLINE, index});
+					} else {
+						program.add(new int[]{Silos.PRINTLINE});
+					}
+					continue;
+				}
+
+				//no arguments
+				if (instruction.equals("return")) {
+					program.add(new int[]{Silos.RETURN});
+					continue;
+				}
+				if (instruction.equals("refresh")) {
+					program.add(new int[]{Silos.REFRESH});
+					continue;
+				}
+
+				//one argument
+				if (instruction.equals("printChar")) {
+					int mode;
+					int argument;
+					try {
+						argument = Integer.parseInt(words[1]);
+						mode = Silos.INTEGER;
+					} catch (Exception e) {
+						argument = (int) words[1].charAt(0);
+						mode = Silos.VARIABLE;
+					}
+					program.add(new int[]{Silos.PRINTCHAR + mode, argument});
+					continue;
+				}
+				if (instruction.equals("printInt")) {
+					program.add(new int[]{Silos.PRINTINT + Silos.VARIABLE, (int) words[1].charAt(0)});
+					continue;
+				}
+				if (instruction.equals("printIntNoLine")) {
+					program.add(new int[]{Silos.PRINTINTNOLINE + Silos.VARIABLE, (int) words[1].charAt(0)});
+					continue;
+				}
+				if (instruction.equals("stackPop")) {
+					int mode;
+					int argument;
+					try {
+						argument = Integer.parseInt(words[1]);
+						mode = Silos.INTEGER;
+					} catch (Exception e) {
+						argument = (int) words[1].charAt(0);
+						mode = Silos.VARIABLE;
+					}
+					program.add(new int[]{Silos.STACK_POP + mode, argument});
+					continue;
+				}
+				if (instruction.equals("queuePop")) {
+					int mode;
+					int argument;
+					try {
+						argument = Integer.parseInt(words[1]);
+						mode = Silos.INTEGER;
+					} catch (Exception e) {
+						argument = (int) words[1].charAt(0);
+						mode = Silos.VARIABLE;
+					}
+					program.add(new int[]{Silos.QUEUE_POP + mode, argument});
+					continue;
+				}
+
+				if (instruction.equals("get")) {
+					int mode;
+					int argument;
+					try {
+						argument = Integer.parseInt(words[1]);
+						mode = Silos.INTEGER;
+					} catch (Exception e) {
+						argument = (int) words[1].charAt(0);
+						mode = Silos.VARIABLE;
+					}
+					program.add(new int[]{Silos.GET + mode, argument});
+					continue;
+				}
+				if (instruction.equals("rand")) {
+					int mode;
+					int argument;
+					try {
+						argument = Integer.parseInt(words[1]);
+						mode = Silos.INTEGER;
+					} catch (Exception e) {
+						argument = (int) words[1].charAt(0);
+						mode = Silos.VARIABLE;
+					}
+					program.add(new int[]{Silos.RAND + mode, argument});
+					continue;
+				}
+				if (instruction.equals("wait")) {
+					int mode;
+					int argument;
+					try {
+						argument = Integer.parseInt(words[1]);
+						mode = Silos.INTEGER;
+					} catch (Exception e) {
+						argument = (int) words[1].charAt(0);
+						mode = Silos.VARIABLE;
+					}
+					program.add(new int[]{Silos.WAIT + mode, argument});
+					continue;
+				}
+
+				//two arguments
+				if (instruction.equals("if")) {
+					int mode;
+					int check;
+					try {
+						check = Integer.parseInt(words[1]);
+						mode = Silos.INTEGER;
+					} catch (Exception e) {
+						check = (int) words[1].charAt(0);
+						mode = Silos.VARIABLE;
+					}
+					String label = words[2];
+					int index = label_temp.indexOf(label);
+					if (index == -1) {
+						index = label_temp.size();
+						label_temp.add(label);
+					}
+					program.add(new int[]{Silos.IF + mode, check, index});
+					continue;
+				}
+				if (instruction.equals("set")) {
+					int mode1, mode2;
+					int arg1, arg2;
+					try {
+						arg1 = Integer.parseInt(words[1]);
+						mode1 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg1 = (int) words[1].charAt(0);
+						mode1 = Silos.VARIABLE;
+					}
+					try {
+						arg2 = Integer.parseInt(words[2]);
+						mode2 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg2 = (int) words[2].charAt(0);
+						mode2 = Silos.VARIABLE;
+					}
+					program.add(new int[]{Silos.SET + (mode2 << 1) + (mode1), arg1, arg2});
+					continue;
+				}
+				if (instruction.equals("stack")) {
+					int mode1, mode2;
+					int arg1, arg2;
+					try {
+						arg1 = Integer.parseInt(words[1]);
+						mode1 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg1 = (int) words[1].charAt(0);
+						mode1 = Silos.VARIABLE;
+					}
+					try {
+						arg2 = Integer.parseInt(words[2]);
+						mode2 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg2 = (int) words[2].charAt(0);
+						mode2 = Silos.VARIABLE;
+					}
+					program.add(new int[]{Silos.STACK + (mode2 << 1) + (mode1), arg1, arg2});
+					continue;
+				}
+				if (instruction.equals("queue")) {
+					int mode1, mode2;
+					int arg1, arg2;
+					try {
+						arg1 = Integer.parseInt(words[1]);
+						mode1 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg1 = (int) words[1].charAt(0);
+						mode1 = Silos.VARIABLE;
+					}
+					try {
+						arg2 = Integer.parseInt(words[2]);
+						mode2 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg2 = (int) words[2].charAt(0);
+						mode2 = Silos.VARIABLE;
+					}
+					program.add(new int[]{Silos.QUEUE + (mode2 << 1) + (mode1), arg1, arg2});
+					continue;
+				}
+
+				//three arguments
+				if (instruction.equals("canvas")) {
+					int mode1, mode2;
+					int arg1, arg2;
+					try {
+						arg1 = Integer.parseInt(words[1]);
+						mode1 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg1 = (int) words[1].charAt(0);
+						mode1 = Silos.VARIABLE;
+					}
+					try {
+						arg2 = Integer.parseInt(words[2]);
+						mode2 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg2 = (int) words[2].charAt(0);
+						mode2 = Silos.VARIABLE;
+					}
+					String text = words[words.length - 1];
+					int index = texts.indexOf(text);
+					if (index == -1) {
+						index = texts.size();
+						texts.add(text);
+					}
+					program.add(new int[]{Silos.CANVAS + (mode2 << 1) + (mode1), arg1, arg2, index});
+					continue;
+				}
+				if (instruction.equals("pen")) {
+					int mode1, mode2, mode3;
+					int arg1, arg2, arg3;
+					try {
+						arg1 = Integer.parseInt(words[1]);
+						mode1 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg1 = (int) words[1].charAt(0);
+						mode1 = Silos.VARIABLE;
+					}
+					try {
+						arg2 = Integer.parseInt(words[2]);
+						mode2 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg2 = (int) words[2].charAt(0);
+						mode2 = Silos.VARIABLE;
+					}
+					try {
+						arg3 = Integer.parseInt(words[3]);
+						mode3 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg3 = (int) words[3].charAt(0);
+						mode3 = Silos.VARIABLE;
+					}
+					program.add(new int[]{Silos.PEN + (mode3 << 2) + (mode2 << 1) + (mode1), arg1, arg2, arg3});
+					continue;
+				}
+				if (instruction.equals("newObj")) {
+					int mode1, mode2, mode3;
+					int arg1, arg2, arg3;
+					try {
+						arg1 = Integer.parseInt(words[1]);
+						mode1 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg1 = (int) words[1].charAt(0);
+						mode1 = Silos.VARIABLE;
+					}
+					try {
+						arg2 = Integer.parseInt(words[2]);
+						mode2 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg2 = (int) words[2].charAt(0);
+						mode2 = Silos.VARIABLE;
+					}
+					try {
+						arg3 = Integer.parseInt(words[3]);
+						mode3 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg3 = (int) words[3].charAt(0);
+						mode3 = Silos.VARIABLE;
+					}
+					program.add(new int[]{Silos.NEWOBJ + (mode3 << 2) + (mode2 << 1) + (mode1), arg1, arg2, arg3});
+					continue;
+				}
+				if (instruction.equals("moveObj")) {
+					int mode1, mode2, mode3;
+					int arg1, arg2, arg3;
+					try {
+						arg1 = Integer.parseInt(words[1]);
+						mode1 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg1 = (int) words[1].charAt(0);
+						mode1 = Silos.VARIABLE;
+					}
+					try {
+						arg2 = Integer.parseInt(words[2]);
+						mode2 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg2 = (int) words[2].charAt(0);
+						mode2 = Silos.VARIABLE;
+					}
+					try {
+						arg3 = Integer.parseInt(words[3]);
+						mode3 = Silos.INTEGER;
+					} catch (Exception e) {
+						arg3 = (int) words[3].charAt(0);
+						mode3 = Silos.VARIABLE;
+					}
+					program.add(new int[]{Silos.MOVEOBJ + (mode3 << 2) + (mode2 << 1) + (mode1), arg1, arg2, arg3});
+					continue;
+				}
+
+				//n arguments
+				if (instruction.equals("bind")) {
+					int[] bindings = new int[words.length * 2 + 1];
+					bindings[0] = Silos.BIND;
+					for (int j = 1; j < words.length; j++) {
+						int mode, argument;
+						try {
+							argument = Integer.parseInt(words[j]);
+							mode = Silos.INTEGER;
+						} catch (Exception e) {
+							argument = (int) words[j].charAt(0);
+							mode = Silos.VARIABLE;
+						}
+						bindings[j * 2 - 1] = mode;
+						bindings[j * 2] = argument;
+					}
+					program.add(bindings);
+				}
+
+				//arithmetics (and assignments)
+				if (instruction.length() > 1) {
+					continue;
+				}
+				if (words[1].length() > 1) {
+					continue;
+				}
+				int instr = -1;
+				int mode = -1;
+				int arg1 = (int) instruction.charAt(0);
+				int arg2 = -1;
+				switch (words[1].charAt(0)) {
+					case '+':
+						instr = Silos.ADD;
+						break;
+					case '-':
+						instr = Silos.SUB;
+						break;
+					case '*':
+						instr = Silos.MUL;
+						break;
+					case '/':
+						instr = Silos.DIV;
+						break;
+					case '%':
+						instr = Silos.MOD;
+						break;
+					case '^':
+						instr = Silos.POW;
+						break;
+					case '|':
+						instr = Silos.ABS;
+						break;
+					case '=':
+						instr = Silos.ASSIGN;
+						break;
+					case '&':
+						instr = Silos.AND;
+						break;
+					case ':':
+						instr = Silos.OR;
+						break;
+					case '!':
+						instr = Silos.XOR;
+						break;
+					case '?':
+						instr = Silos.XNOR;
+						break;
+					case '~':
+						instr = Silos.NOT;
+						break;
+					case '<':
+						instr = Silos.LSHIFT;
+						break;
+					case '>':
+						instr = Silos.RSHIFT;
+						break;
+				}
+				if (instr >= 0) {
+					if (instr == Silos.ABS || instr == Silos.NOT) {
+						program.add(new int[]{instr, arg1});
+					} else if (instr == Silos.ASSIGN) {
+//If the last phrase is a mathematical expression
+						String s;
+						if ((s = temp.substring(temp.lastIndexOf('=') + 1).replaceAll(" ", "")).matches("(.*)[\\Q()*%-+/^\\E](.*)") || words[2].contains("rand")) {
+							arg2 = texts.size();
+							texts.add(s);
+							mode = Silos.PARSABLE;
+//go into parsable mode
+						} else {
+							try {
+								arg2 = Integer.parseInt(words[2]);
+								mode = Silos.INTEGER;
+							} catch (Exception e) {
+								try {
+									try {
+										arg2 = Integer.parseInt(words[3]);
+										mode = Silos.INTEGER;
+									} catch (Exception ex) {
+										arg2 = (int) words[3].charAt(0);
+										mode = Silos.VARIABLE;
+									}
+									instr = Silos.GET;
+								} catch (Exception ex) {
+									arg2 = (int) words[2].charAt(0);
+									mode = Silos.VARIABLE;
+								}
+							}
+						}
+						program.add(new int[]{instr + mode, arg1, arg2});
+					} else {
+						try {
+							arg2 = Integer.parseInt(words[2]);
+							mode = Silos.INTEGER;
+						} catch (Exception e) {
+							arg2 = (int) words[2].charAt(0);
+							mode = Silos.VARIABLE;
+						}
+						program.add(new int[]{instr + mode, arg1, arg2});
+					}
+				}
+			}
+			//labels and function names
+			for (int i = 0; i < program.size(); i++) {
+				int[] instruction = (int[]) program.get(i);
+				String label;
+				int index;
+				switch (instruction[0] & ~0b11111111) {
+					case GOTO:
+						label = label_temp.get(instruction[1]);
+						index = labels.indexOf(label);
+						if (index >= 0) {
+							instruction[1] = label_pos.get(index);
+						} else {
+							instruction[1] = i;
+						}
+						break;
+					case IF:
+						label = label_temp.get(instruction[2]);
+						index = labels.indexOf(label);
+						if (index >= 0) {
+							instruction[2] = label_pos.get(index);
+						} else {
+							instruction[2] = i;
+						}
+						break;
+					case GOSUB:
+						label = func_temp.get(instruction[1]);
+						index = funcs.indexOf(label);
+						if (index >= 0) {
+							instruction[1] = func_pos.get(index);
+						} else {
+							instruction[1] = i;
+						}
+						break;
+				}
+			}
+			Silos.texts = texts.toArray(new String[texts.size()]);
+			return (int[][]) program.toArray(new int[program.size()][]);
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return null;
+	}
+
+	public static String program = "";
+
+	/**
+	 * Evaluates a token by figuring out whether it is an integer literal or a
+	 * variable
+	 *
+	 * @param mode, argument, index
+	 * @return the value of the token
+	 */
+	private static int evalToken(int mode, int argument, int index) {
+		return ((mode >> index) & 1) == VARIABLE ? mem[argument] : argument;
+	}
+
+	public static double parse(String toParse) {
+
+		try {
+			return Double.parseDouble(toParse);
+		} catch (Exception ex) {
+			return (parser(toParse));
+		}
+	}
+
+	/**
+	 * Evaluates a mathematical expression Currently supported operators (+-//*%^)
+	 * addition subtraction multiplication division (/) modulus and exponentiation
+	 *
+	 * @param toParse
+	 * @return
+	 */
+	public static double parser(String toParse) {
+		toParse = toParse.replaceAll(" ", "");
+		Stack<Integer> match = new Stack<>();
+		int[] matchMap = new int[toParse.length()];
+
+		for (int i = 0; i < toParse.length(); i++) {
+			if (toParse.charAt(i) == '(') {
+				match.push(i);
+			} else if (toParse.charAt(i) == ')') {
+				int temp = match.pop();
+				matchMap[i] = temp;
+				matchMap[temp] = i;
+			} else {
+				matchMap[i] = -1;
+			}
+		}
+		int firstIndex = -1;
+		for (int i = 0; i < matchMap.length; i++) {
+			if (matchMap[i] >= 0) {
+				firstIndex = i;
+				break;
+			}
+		}
+		if (firstIndex >= 0) {
+			String s = parse(toParse.substring(firstIndex + 1, matchMap[firstIndex])) + "";
+			s = Double.parseDouble(s) > 0 ? s : "\\" + s.substring(1);
+			return parse(toParse.substring(0, firstIndex) + s + toParse.substring(matchMap[firstIndex] + 1));
+		} else {
+
+			ArrayList<Double> num = parseToDoubles(new ArrayList<>(Arrays.asList(toParse.split("[\\Q+-^*%/\\E]"))));
+
+			ArrayList<Character> operations = new ArrayList<>();
+
+			for (char c : toParse.toCharArray()) {
+				if ("^*/%+-".contains(c + "")) {
+					operations.add(c);
+				}
+			}
+
+			if (toParse.charAt(0) == '-') {
+				num.set(0, num.get(0) * -1);
+				operations.remove(0);
+			}
+			if (operations.isEmpty()) {
+				return num.get(0);
+			}
+//pemdas, comes back to bite me
+			for (int i = 0; i < operations.size(); i++) {
+				if ("^".contains(operations.get(i) + "")) {
+					//	System.out.println(num+"|"+operations);
+					num.add(i, operate(operations.remove(i), num.remove(i), num.remove(i)));
+					i--;
+				}
+			}
+			for (int i = 0; i < operations.size(); i++) {
+				if ("*/%".contains(operations.get(i) + "")) {
+					//	System.out.println(num+"|"+operations);
+					num.add(i, operate(operations.remove(i), num.remove(i), num.remove(i)));
+					i--;
+				}
+			}
+			for (int i = 0; i < operations.size(); i++) {
+				if ("+-".contains(operations.get(i) + "")) {
+					//	System.out.println(num+"|"+operations);
+					num.add(i, operate(operations.remove(i), num.remove(i), num.remove(i)));
+					i--;
+				}
+			}
+			return num.get(0).doubleValue();
+		}
+
+	}
+
+	/**
+	 * a op b
+	 *
+	 * @param op
+	 * @param a
+	 * @param b
+	 * @return
+	 */
+	public static double operate(char op, double a, double b) {
+		switch (op) {
+			case '+':
+				return a + b;
+			case '-':
+				return a - b;
+			case '*':
+				return a * b;
+			case '/':
+				return a / b;
+			case '%':
+				return a % b;
+			case '^':
+				return Math.pow(a, b);
+			default:
+				System.err.println("Malformed pattern, did not recognize the character:\"" + op + "\" as a valid operation ");
+				return -1.1111;
+		}
+	}
+}
